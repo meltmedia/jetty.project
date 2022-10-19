@@ -41,12 +41,12 @@ import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpHeaderValue;
 import org.eclipse.jetty.io.AbstractConnection;
+import org.eclipse.jetty.io.Content;
 import org.eclipse.jetty.io.EndPoint;
 import org.eclipse.jetty.io.RetainableByteBuffer;
 import org.eclipse.jetty.io.RetainableByteBufferPool;
 import org.eclipse.jetty.util.Attachable;
 import org.eclipse.jetty.util.BufferUtil;
-import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.Promise;
 import org.eclipse.jetty.util.thread.AutoLock;
 import org.slf4j.Logger;
@@ -68,6 +68,7 @@ public class HttpConnectionOverFCGI extends AbstractConnection implements IConne
     private HttpChannelOverFCGI channel;
     private RetainableByteBuffer networkBuffer;
     private Object attachment;
+    private boolean contentGenerated = false;
 
     public HttpConnectionOverFCGI(EndPoint endPoint, HttpDestination destination, Promise<Connection> promise)
     {
@@ -149,6 +150,19 @@ public class HttpConnectionOverFCGI extends AbstractConnection implements IConne
         this.networkBuffer = null;
     }
 
+    boolean parseAndFill()
+    {
+        if (LOG.isDebugEnabled())
+            LOG.debug("> parseAndFill");
+        contentGenerated = false;
+        if (networkBuffer == null)
+            networkBuffer = newNetworkBuffer();
+        process();
+        if (LOG.isDebugEnabled())
+            LOG.debug("< parseAndFill");
+        return contentGenerated;
+    }
+
     void process()
     {
         EndPoint endPoint = getEndPoint();
@@ -170,7 +184,7 @@ public class HttpConnectionOverFCGI extends AbstractConnection implements IConne
                 if (read == 0)
                 {
                     releaseNetworkBuffer();
-                    fillInterested();
+                    //fillInterested();
                     return;
                 }
                 else if (read < 0)
@@ -419,6 +433,8 @@ public class HttpConnectionOverFCGI extends AbstractConnection implements IConne
         @Override
         public void onBegin(int request, int code, String reason)
         {
+            if (LOG.isDebugEnabled())
+                LOG.debug("onBegin r={},c={},reason={}", request, code, reason);
             HttpChannelOverFCGI channel = HttpConnectionOverFCGI.this.channel;
             if (channel != null)
                 channel.responseBegin(code, reason);
@@ -429,6 +445,8 @@ public class HttpConnectionOverFCGI extends AbstractConnection implements IConne
         @Override
         public void onHeader(int request, HttpField field)
         {
+            if (LOG.isDebugEnabled())
+                LOG.debug("onHeader r={},f={}", request, field);
             HttpChannelOverFCGI channel = HttpConnectionOverFCGI.this.channel;
             if (channel != null)
                 channel.responseHeader(field);
@@ -439,6 +457,8 @@ public class HttpConnectionOverFCGI extends AbstractConnection implements IConne
         @Override
         public boolean onHeaders(int request)
         {
+            if (LOG.isDebugEnabled())
+                LOG.debug("onHeaders r={}", request);
             HttpChannelOverFCGI channel = HttpConnectionOverFCGI.this.channel;
             if (channel != null)
                 return !channel.responseHeaders();
@@ -449,6 +469,8 @@ public class HttpConnectionOverFCGI extends AbstractConnection implements IConne
         @Override
         public boolean onContent(int request, FCGI.StreamType stream, ByteBuffer buffer)
         {
+            if (LOG.isDebugEnabled())
+                LOG.debug("onContent r={},t={},b={}", request, stream, BufferUtil.toDetailString(buffer));
             switch (stream)
             {
                 case STD_OUT ->
@@ -457,7 +479,17 @@ public class HttpConnectionOverFCGI extends AbstractConnection implements IConne
                     if (channel != null)
                     {
                         networkBuffer.retain();
-                        return !channel.content(buffer, Callback.from(networkBuffer::release, HttpConnectionOverFCGI.this::close));
+                        Content.Chunk chunk = Content.Chunk.from(buffer, false, networkBuffer);
+                        try
+                        {
+                            contentGenerated = true;
+                            return !channel.content(chunk);
+                        }
+                        catch (Throwable x)
+                        {
+                            HttpConnectionOverFCGI.this.close(x);
+                            return true;
+                        }
                     }
                     else
                     {
@@ -473,6 +505,8 @@ public class HttpConnectionOverFCGI extends AbstractConnection implements IConne
         @Override
         public void onEnd(int request)
         {
+            if (LOG.isDebugEnabled())
+                LOG.debug("onEnd r={}", request);
             HttpChannelOverFCGI channel = HttpConnectionOverFCGI.this.channel;
             if (channel != null)
             {
@@ -488,6 +522,8 @@ public class HttpConnectionOverFCGI extends AbstractConnection implements IConne
         @Override
         public void onFailure(int request, Throwable failure)
         {
+            if (LOG.isDebugEnabled())
+                LOG.debug("onFailure r={},f={}", request, failure);
             HttpChannelOverFCGI channel = HttpConnectionOverFCGI.this.channel;
             if (channel != null)
             {
