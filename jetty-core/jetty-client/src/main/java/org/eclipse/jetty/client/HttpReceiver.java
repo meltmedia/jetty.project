@@ -21,6 +21,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.eclipse.jetty.client.api.Response;
 import org.eclipse.jetty.client.api.Result;
@@ -63,6 +64,7 @@ public abstract class HttpReceiver
 {
     private static final Logger LOG = LoggerFactory.getLogger(HttpReceiver.class);
 
+    private final AtomicBoolean proceedToSuccess = new AtomicBoolean();
     private final SerializedInvoker invoker = new SerializedInvoker();
     private final ContentListeners contentListeners = new ContentListeners();
     private final HttpChannel channel;
@@ -84,10 +86,11 @@ public abstract class HttpReceiver
         return new SerializedContentSource(newContentSource());
     }
 
-    // TODO: move Wrapper to Content.Source.Wrapper.
+    // TODO: create and use new Wrapper class in Content.Source.Wrapper.
     private class SerializedContentSource implements Content.Source
     {
         private final Content.Source delegate;
+        private final AtomicBoolean lastAlreadyConsumed = new AtomicBoolean();
 
         private SerializedContentSource(Content.Source delegate)
         {
@@ -103,7 +106,13 @@ public abstract class HttpReceiver
         @Override
         public Content.Chunk read()
         {
-            return delegate.read();
+            Content.Chunk read = delegate.read();
+            if (read != null && read.isLast() && lastAlreadyConsumed.compareAndSet(false, true))
+            {
+                HttpExchange httpExchange = getHttpExchange();
+                responseSuccess(httpExchange);
+            }
+            return read;
         }
 
         @Override
@@ -177,9 +186,9 @@ public abstract class HttpReceiver
 
                     if (!_chunk.hasRemaining())
                     {
-                        if (LOG.isDebugEnabled())
-                            LOG.debug("Could not decode more from this chunk, releasing it");
                         Content.Chunk result = _chunk.isLast() ? Content.Chunk.EOF : null;
+                        if (LOG.isDebugEnabled())
+                            LOG.debug("Could not decode more from this chunk, releasing it, r={}", result);
                         _chunk.release();
                         _chunk = null;
                         return result;
@@ -244,11 +253,13 @@ public abstract class HttpReceiver
             if (protocolHandler != null)
             {
                 handlerListener = protocolHandler.getResponseListener();
-                if (LOG.isDebugEnabled()) LOG.debug("Response {} found protocol handler {}", response, protocolHandler);
+                if (LOG.isDebugEnabled())
+                    LOG.debug("Response {} found protocol handler {}", response, protocolHandler);
             }
             exchange.getConversation().updateResponseListeners(handlerListener);
 
-            if (LOG.isDebugEnabled()) LOG.debug("Response begin {}", response);
+            if (LOG.isDebugEnabled())
+                LOG.debug("Response begin {}", response);
             ResponseNotifier notifier = destination.getResponseNotifier();
             notifier.notifyBegin(conversation.getResponseListeners(), response);
         });
@@ -391,6 +402,18 @@ public abstract class HttpReceiver
     {
         invoker.run(() ->
         {
+            // Before the state is reset, the parser must have reached the end of the data (which calls responseSuccess)
+            // as well as the last chunk must have been read from the Content.Source (which also calls responseSuccess);
+            // only when both events happened can we proceed to the reset and termination of the exchange.
+            if (proceedToSuccess.compareAndSet(false, true))
+            {
+                if (LOG.isDebugEnabled())
+                    LOG.debug("First responseSuccess notification, skipping until second notification");
+                return;
+            }
+            if (LOG.isDebugEnabled())
+                LOG.debug("Second responseSuccess notification, proceeding");
+
             if (LOG.isDebugEnabled())
                 LOG.debug("responseSuccess");
 
@@ -403,7 +426,8 @@ public abstract class HttpReceiver
             reset();
 
             HttpResponse response = exchange.getResponse();
-            if (LOG.isDebugEnabled()) LOG.debug("Response success {}", response);
+            if (LOG.isDebugEnabled())
+                LOG.debug("Response success {}", response);
             List<Response.ResponseListener> listeners = exchange.getConversation().getResponseListeners();
             ResponseNotifier notifier = getHttpDestination().getResponseNotifier();
             notifier.notifySuccess(listeners, response);
@@ -465,19 +489,22 @@ public abstract class HttpReceiver
     {
         HttpResponse response = exchange.getResponse();
 
-        if (LOG.isDebugEnabled()) LOG.debug("Response complete {}, result: {}", response, result);
+        if (LOG.isDebugEnabled())
+            LOG.debug("Response complete {}, result: {}", response, result);
 
         if (result != null)
         {
             result = channel.exchangeTerminating(exchange, result);
             boolean ordered = getHttpDestination().getHttpClient().isStrictEventOrdering();
-            if (!ordered) channel.exchangeTerminated(exchange, result);
+            if (!ordered)
+                channel.exchangeTerminated(exchange, result);
             List<Response.ResponseListener> listeners = exchange.getConversation().getResponseListeners();
             if (LOG.isDebugEnabled())
                 LOG.debug("Request/Response {}: {}, notifying {}", failure == null ? "succeeded" : "failed", result, listeners);
             ResponseNotifier notifier = getHttpDestination().getResponseNotifier();
             notifier.notifyComplete(listeners, result);
-            if (ordered) channel.exchangeTerminated(exchange, result);
+            if (ordered)
+                channel.exchangeTerminated(exchange, result);
         }
     }
 
@@ -491,7 +518,7 @@ public abstract class HttpReceiver
     protected void reset()
     {
         if (LOG.isDebugEnabled())
-            LOG.debug("resetting {}", this);
+            LOG.debug("Resetting {}", this);
         cleanup();
     }
 
@@ -505,7 +532,7 @@ public abstract class HttpReceiver
     protected void dispose()
     {
         if (LOG.isDebugEnabled())
-            LOG.debug("disposing {}", this);
+            LOG.debug("Disposing {}", this);
         cleanup();
     }
 
