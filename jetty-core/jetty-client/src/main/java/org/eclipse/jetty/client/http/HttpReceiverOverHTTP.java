@@ -36,7 +36,6 @@ import org.eclipse.jetty.io.RetainableByteBuffer;
 import org.eclipse.jetty.io.RetainableByteBufferPool;
 import org.eclipse.jetty.util.BufferUtil;
 import org.eclipse.jetty.util.Promise;
-import org.eclipse.jetty.util.thread.SerializedInvoker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -100,7 +99,6 @@ public class HttpReceiverOverHTTP extends HttpReceiver implements HttpParser.Res
 
     private class ContentSource implements Content.Source
     {
-        private final SerializedInvoker invoker = new SerializedInvoker();
         private volatile Content.Chunk currentChunk;
         private volatile Runnable demandCallback;
 
@@ -121,7 +119,7 @@ public class HttpReceiverOverHTTP extends HttpReceiver implements HttpParser.Res
             if (LOG.isDebugEnabled())
                 LOG.debug("onDataAvailable");
             if (demandCallback != null)
-                invoker.run(this::invokeDemandCallback);
+                invokeDemandCallback();
         }
 
         private Content.Chunk consumeCurrentChunk()
@@ -148,8 +146,7 @@ public class HttpReceiverOverHTTP extends HttpReceiver implements HttpParser.Res
             if (this.demandCallback != null)
                 throw new IllegalStateException();
             this.demandCallback = demandCallback;
-
-            invoker.run(this::meetDemand);
+            meetDemand();
         }
 
         private void meetDemand()
@@ -160,7 +157,7 @@ public class HttpReceiverOverHTTP extends HttpReceiver implements HttpParser.Res
             {
                 if (currentChunk != null)
                 {
-                    invoker.run(this::invokeDemandCallback);
+                    invokeDemandCallback();
                     break;
                 }
                 else
@@ -233,9 +230,6 @@ public class HttpReceiverOverHTTP extends HttpReceiver implements HttpParser.Res
             if (networkBuffer == null)
                 acquireNetworkBuffer();
             parseAndFill();
-            Runnable r = actionRef.getAndSet(null);
-            if (r != null)
-                r.run(); // This starts the onContentSource loop.
             if (contentSource == null && networkBuffer == null)
                 fillInterestedIfNeeded();
         }
@@ -520,7 +514,10 @@ public class HttpReceiverOverHTTP extends HttpReceiver implements HttpParser.Res
 
         // Store the EndPoint is case of upgrades, tunnels, etc.
         exchange.getRequest().getConversation().setAttribute(EndPoint.class.getName(), getHttpConnection().getEndPoint());
-        actionRef.set(() -> responseHeaders(exchange));
+        if (LOG.isDebugEnabled())
+            LOG.debug("Setting action to responseHeaders(exchange)");
+        if (actionRef.getAndSet(() -> responseHeaders(exchange)) != null)
+            throw new IllegalStateException();
         return true;
     }
 
@@ -541,7 +538,10 @@ public class HttpReceiverOverHTTP extends HttpReceiver implements HttpParser.Res
             throw new IllegalStateException("Content generated with unconsumed content left");
 
         contentGenerated = Content.Chunk.from(buffer, false, networkBuffer);
-        actionRef.set(contentSource::onDataAvailable);
+        if (LOG.isDebugEnabled())
+            LOG.debug("Setting action to contentSource.onDataAvailable()");
+        if (actionRef.getAndSet(contentSource::onDataAvailable) != null)
+            throw new IllegalStateException();
         return true;
     }
 
