@@ -15,6 +15,7 @@ package org.eclipse.jetty.server.handler;
 
 import java.util.List;
 
+import org.eclipse.jetty.http.HttpURI;
 import org.eclipse.jetty.server.Context;
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.Request;
@@ -171,17 +172,26 @@ public class TryPathsHandler extends Handler.Wrapper
     private static class TryPathsRequest extends Request.Wrapper
     {
         private final String pathInContext;
+        private final HttpURI httpURI;
 
         public TryPathsRequest(Request wrapped, String pathInContext)
         {
             super(wrapped);
             this.pathInContext = pathInContext;
+            this.httpURI = HttpURI.build(wrapped.getHttpURI())
+                .pathQuery(wrapped.getContext().getContextPath() + pathInContext);
         }
 
         @Override
         public String getPathInContext()
         {
             return pathInContext;
+        }
+
+        @Override
+        public HttpURI getHttpURI()
+        {
+            return httpURI;
         }
     }
 }
