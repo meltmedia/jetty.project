@@ -19,6 +19,7 @@ import org.eclipse.jetty.http.HttpURI;
 import org.eclipse.jetty.server.Context;
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.Request;
+import org.eclipse.jetty.util.URIUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -179,7 +180,7 @@ public class TryPathsHandler extends Handler.Wrapper
             super(wrapped);
             this.pathInContext = pathInContext;
             this.httpURI = HttpURI.build(wrapped.getHttpURI())
-                .pathQuery(wrapped.getContext().getContextPath() + pathInContext);
+                .pathQuery(URIUtil.addPaths(wrapped.getContext().getContextPath(), pathInContext));
         }
 
         @Override
