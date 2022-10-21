@@ -91,7 +91,7 @@ public class MailSessionReference extends Reference implements ObjectFactory
 
     public MailSessionReference()
     {
-        super("javax.jakarta.Session", MailSessionReference.class.getName(), null);
+        super("javax.mail.Session", MailSessionReference.class.getName(), null);
     }
 
     /**
